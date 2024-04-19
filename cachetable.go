@@ -20,29 +20,39 @@ type CacheTable struct {
 
 	// The table's name.
 	name string
+	// [ 一个表中的所有条目都存在这个map里，map的key是interface即任意类型，value是CacheItem指针类型 ]
 	// All cached items.
 	items map[interface{}]*CacheItem
 
+	// [ 负责触发清除操作的计时器 ]
 	// Timer responsible for triggering cleanup.
 	cleanupTimer *time.Timer
+	// [ 触发清除操作的时间间隔 ]
 	// Current timer duration.
 	cleanupInterval time.Duration
 
 	// The logger used for this table.
 	logger *log.Logger
 
+	// [ 尝试加载一个不存在的key时触发的回调函数 ]
 	// Callback method triggered when trying to load a non-existing key.
 	loadData func(key interface{}, args ...interface{}) *CacheItem
+
+	// [ 添加一个新item时触发的回调函数 ]
 	// Callback method triggered when adding a new item to the cache.
 	addedItem []func(item *CacheItem)
+
+	// [ 删除item前触发的回调函数 ]
 	// Callback method triggered before deleting an item from the cache.
 	aboutToDeleteItem []func(item *CacheItem)
 }
 
 // Count returns how many items are currently stored in the cache.
+// Count 函数返回指定的CacheTable中item的条目数量
 func (table *CacheTable) Count() int {
 	table.RLock()
 	defer table.RUnlock()
+	// table.items 是一个map，len() 返回map的元素数量
 	return len(table.items)
 }
 
@@ -50,7 +60,7 @@ func (table *CacheTable) Count() int {
 func (table *CacheTable) Foreach(trans func(key interface{}, item *CacheItem)) {
 	table.RLock()
 	defer table.RUnlock()
-
+	// 遍历items，把每个key和value都丢给trans函数来处理
 	for k, v := range table.items {
 		trans(k, v)
 	}
@@ -59,14 +69,28 @@ func (table *CacheTable) Foreach(trans func(key interface{}, item *CacheItem)) {
 // SetDataLoader configures a data-loader callback, which will be called when
 // trying to access a non-existing key. The key and 0...n additional arguments
 // are passed to the callback function.
+// 形参列表是一个函数，函数的参数是一个interface{}类型的key和不固定数目的额外参数，返回值是CacheItem指针
 func (table *CacheTable) SetDataLoader(f func(interface{}, ...interface{}) *CacheItem) {
 	table.Lock()
 	defer table.Unlock()
+	// 形参f函数被丢给了table的loadData属性，loadData所指向的方法什么时候被调用？
+	// 作者注释说是当访问一个不存在的key时，需要调用一个方法，这个方法通过SetDataLoader设定，方法的实现由用户来定义
 	table.loadData = f
 }
 
 // SetAddedItemCallback configures a callback, which will be called every time
 // a new item is added to the cache.
+// 创建新item时被调用的回调方法
+// 这里 SetAddedItemCallback方法的形参名是f，类型是func(*CacheItem)，也就是说func(*CacheItem)被作为一个类型
+// 这样定义的话，在函数内部调用该f时，传入一个*CacheItem类型的实参即可，传递实参的参数名并不重要（况且这里函数内部也）
+/*
+比如，定义变量show为func(int)类型的时候没有设置形参变量名称，调用时随便定义即可
+func main() {
+    var show func(int)
+    show = func(num int) { fmt.Println(num) }
+    show(123)
+}
+*/
 func (table *CacheTable) SetAddedItemCallback(f func(*CacheItem)) {
 	if len(table.addedItem) > 0 {
 		table.RemoveAddedItemCallbacks()
@@ -76,7 +100,7 @@ func (table *CacheTable) SetAddedItemCallback(f func(*CacheItem)) {
 	table.addedItem = append(table.addedItem, f)
 }
 
-//AddAddedItemCallback appends a new callback to the addedItem queue
+// AddAddedItemCallback appends a new callback to the addedItem queue
 func (table *CacheTable) AddAddedItemCallback(f func(*CacheItem)) {
 	table.Lock()
 	defer table.Unlock()
@@ -116,6 +140,7 @@ func (table *CacheTable) RemoveAboutToDeleteItemCallback() {
 }
 
 // SetLogger sets the logger to be used by this cache table.
+// 把一个logger实例丢给table的logger属性
 func (table *CacheTable) SetLogger(logger *log.Logger) {
 	table.Lock()
 	defer table.Unlock()
@@ -123,11 +148,14 @@ func (table *CacheTable) SetLogger(logger *log.Logger) {
 }
 
 // Expiration check loop, triggered by a self-adjusting timer.
+// 由计时器触发的到期检查
 func (table *CacheTable) expirationCheck() {
 	table.Lock()
+	// 负责触发清除操作的计时器暂停
 	if table.cleanupTimer != nil {
 		table.cleanupTimer.Stop()
 	}
+	// 计时器的时间间隔
 	if table.cleanupInterval > 0 {
 		table.log("Expiration check triggered after", table.cleanupInterval, "for table", table.name)
 	} else {
@@ -136,23 +164,34 @@ func (table *CacheTable) expirationCheck() {
 
 	// To be more accurate with timers, we would need to update 'now' on every
 	// loop iteration. Not sure it's really efficient though.
+	// 当前时间
 	now := time.Now()
+	// 定义一个最小时间间隔（后面用于赋值给table的cleanupInterval属性，即触发清除操作的时间间隔），初始化定义为0，下面会更新
 	smallestDuration := 0 * time.Second
+	// 遍历一个table中的items
 	for key, item := range table.items {
 		// Cache values so we don't keep blocking the mutex.
 		item.RLock()
+		// lifeSpan代表不再被访问后剩余存活时间
 		lifeSpan := item.lifeSpan
+		// item的最后一次访问时间
 		accessedOn := item.accessedOn
 		item.RUnlock()
-
+		// 存活时间为0的item不作处理
 		if lifeSpan == 0 {
 			continue
 		}
+		// time.Now().Sub()是计算时间间隔的方法，这里即计算上一次访问时间到现在的时间间隔。
+		// 如果时间间隔大于剩余存活时间，说明已经过期了，则删除该item
 		if now.Sub(accessedOn) >= lifeSpan {
 			// Item has excessed its lifespan.
+			// 执行删除操作
 			table.deleteInternal(key)
 		} else {
 			// Find the item chronologically closest to its end-of-lifespan.
+			// 这一段else判断主要作用是为了确定 可执行清除item操作的时间间隔值
+			// lifeSpan-now.Sub(accessedOn) item不再被访问后的剩余存活时间 - item上次被访问后到现在的时间间隔 = item到现在剩余的存活时间（过期时间）
+			// 如果 item到现在剩余的存活时间 小于 这段函数里设置的最小时间间隔，则更新最小时间间隔的值（后面传递给table.cleanupInterval以确定清除间隔）
 			if smallestDuration == 0 || lifeSpan-now.Sub(accessedOn) < smallestDuration {
 				smallestDuration = lifeSpan - now.Sub(accessedOn)
 			}
@@ -160,10 +199,16 @@ func (table *CacheTable) expirationCheck() {
 	}
 
 	// Setup the interval for the next cleanup run.
+	// 上面已经找到了最近接过期时间的时间间隔值，这里将这个时间丢给了cleanupInterval（触发清除操作的时间间隔）
 	table.cleanupInterval = smallestDuration
+	//
 	if smallestDuration > 0 {
+		// time.Now().AfterFunc() 函数用于在指定的时间段后执行指定的函数
+		// cleanupTimer（负责触发清除操作的计时器）被设置为 smallestDuration，时间到之后执行expirationCheck方法
 		table.cleanupTimer = time.AfterFunc(smallestDuration, func() {
+			// 这里并不是循环启动goroutine，而是启动一个新的goroutine后当前goroutine会退出，这里不会引起goroutine泄漏。
 			go table.expirationCheck()
+			// expirationCheck方法无非是做一个定期的数据过期检查操作
 		})
 	}
 	table.Unlock()
@@ -327,8 +372,10 @@ type CacheItemPair struct {
 // Interface to sort by AccessCount.
 type CacheItemPairList []CacheItemPair
 
-func (p CacheItemPairList) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
-func (p CacheItemPairList) Len() int           { return len(p) }
+func (p CacheItemPairList) Swap(i, j int) { p[i], p[j] = p[j], p[i] }
+func (p CacheItemPairList) Len() int      { return len(p) }
+
+// Less 函数用来判断CacheItemPairList的第i个CacheItemPairList和第j个CacheItemPairList的AccessCount大小关系，前者大则返回true，反之false
 func (p CacheItemPairList) Less(i, j int) bool { return p[i].AccessCount > p[j].AccessCount }
 
 // MostAccessed returns the most accessed items in this cache table

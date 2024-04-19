@@ -15,12 +15,14 @@ import (
 // CacheItem is an individual cache item
 // Parameter data contains the user-set value in the cache.
 type CacheItem struct {
+	// 相当于CacheItem继承了sync.RWMutex的所有方法，所以后面CacheItem的实例化对象可以直接调用sync.RWMutex的所有方法
 	sync.RWMutex
 
 	// The item's key.
 	key interface{}
 	// The item's data.
 	data interface{}
+	// [ 不再被访问后剩余存活时间 ]
 	// How long will the item live in the cache when not being accessed/kept alive.
 	lifeSpan time.Duration
 
@@ -30,7 +32,8 @@ type CacheItem struct {
 	accessedOn time.Time
 	// How often the item was accessed.
 	accessCount int64
-
+	// [ item被删除时触发的回调函数 ]
+	// 该参数的类型是一个切片，可存放多个可接受任意参数类型的函数，作用即item被删除时可能会触发多个回调函数
 	// Callback method triggered right before removing the item from the cache
 	aboutToExpire []func(key interface{})
 }
@@ -54,7 +57,9 @@ func NewCacheItem(key interface{}, lifeSpan time.Duration, data interface{}) *Ca
 }
 
 // KeepAlive marks an item to be kept for another expireDuration period.
+// [ 将accessedOn设置为当前时间 ]
 func (item *CacheItem) KeepAlive() {
+	// 因为item继承了sync.RWMutex，所以这里item可以直接调用sync.RWMutex的所有方法，这里是加了一个写锁
 	item.Lock()
 	defer item.Unlock()
 	item.accessedOn = time.Now()
@@ -69,6 +74,7 @@ func (item *CacheItem) LifeSpan() time.Duration {
 
 // AccessedOn returns when this item was last accessed.
 func (item *CacheItem) AccessedOn() time.Time {
+	// 加读锁
 	item.RLock()
 	defer item.RUnlock()
 	return item.accessedOn
@@ -101,6 +107,7 @@ func (item *CacheItem) Data() interface{} {
 
 // SetAboutToExpireCallback configures a callback, which will be called right
 // before the item is about to be removed from the cache.
+// 该函数作用是设置item被删除时触发的回调函数，通过调用RemoveAboutToExpireCallback()函数清空所有回调函数，添加指定要执行的回调函数
 func (item *CacheItem) SetAboutToExpireCallback(f func(interface{})) {
 	if len(item.aboutToExpire) > 0 {
 		item.RemoveAboutToExpireCallback()
@@ -111,6 +118,7 @@ func (item *CacheItem) SetAboutToExpireCallback(f func(interface{})) {
 }
 
 // AddAboutToExpireCallback appends a new callback to the AboutToExpire queue
+// 该函数添加回调函数到aboutToExpire切片中，作用是 添加item被删除时会执行的回调函数
 func (item *CacheItem) AddAboutToExpireCallback(f func(interface{})) {
 	item.Lock()
 	defer item.Unlock()
@@ -118,6 +126,7 @@ func (item *CacheItem) AddAboutToExpireCallback(f func(interface{})) {
 }
 
 // RemoveAboutToExpireCallback empties the about to expire callback queue
+// 该函数作用是移除所有aboutToExpire的回调函数
 func (item *CacheItem) RemoveAboutToExpireCallback() {
 	item.Lock()
 	defer item.Unlock()
