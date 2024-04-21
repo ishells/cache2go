@@ -214,28 +214,47 @@ func (table *CacheTable) expirationCheck() {
 	table.Unlock()
 }
 
+// 先看上层调用者的定义
+// 这里 addInternal方法的上层调用者分别为 Add()方法 和 NotFoundAdd() 方法
+// 看完这个方法的代码，就会知道这个函数做了两件事情
+// 1. 将item添加到table的items属性中，table.items[item.key] = item
+// 2. 执行添加item时触发的回调函数，callback(item) 和 判断是否触发过期检查方法expirationCheck()
 func (table *CacheTable) addInternal(item *CacheItem) {
 	// Careful: do not run this method unless the table-mutex is locked!
+	// 调用addInternal方法前，先要加锁
 	// It will unlock it for the caller before running the callbacks and checks
+	// 它将会在运行回调和检查之前为调用者解锁。
 	table.log("Adding item with key", item.key, "and lifespan of", item.lifeSpan, "to table", table.name)
 	table.items[item.key] = item
 
 	// Cache values so we don't keep blocking the mutex.
+	// cleanupInterval [ 触发清除操作的时间间隔 ]
 	expDur := table.cleanupInterval
+	// addedItem 保存的是 [ 添加一个新item时触发的回调函数 ]
 	addedItem := table.addedItem
+	// 将两个值保存到局部变量之后释放锁
 	table.Unlock()
 
 	// Trigger callback after adding an item to cache.
+	// 局部变量 addedItem 保存的是 [ 添加一个新item时触发的回调函数 ]
 	if addedItem != nil {
+		// 调用 addedItem 中的回调函数，也就是添加一个item时需要调用的函数
 		for _, callback := range addedItem {
 			callback(item)
 		}
 	}
 
 	// If we haven't set up any expiration check timer or found a more imminent item.
+	// 注释：如果我们没有设置任何过期检查计时器或者找到一个更紧迫的项。
+	// if的第一个条件: item.lifeSpan > 0, 表示当前item的存活时间还没到
+	// expDur保存的是 table.cleanupInterval [ 触发清除操作的时间间隔 ],这个值为0，表示还没有设置任何过期检查计时器
+	// item.lifeSpan < expDur 表示设置了触发清除操作的时间间隔，但是当前新增的item的存活时间要比时间间隔更短
+	// 满足以上条件之后，就要触发expirationCheck方法
 	if item.lifeSpan > 0 && (expDur == 0 || item.lifeSpan < expDur) {
 		table.expirationCheck()
 	}
+	// lifeSpan 代表的是item的存活时间，而cleanupInterval是对于一个table来说触发检查还剩余的时间，
+	// 如果item的存活时间比触发检查还短，那么就说明需要提前触发expirationCheck操作了
 }
 
 // Add adds a key/value pair to the cache.
@@ -244,10 +263,12 @@ func (table *CacheTable) addInternal(item *CacheItem) {
 // will get removed from the cache.
 // Parameter data is the item's value.
 func (table *CacheTable) Add(key interface{}, lifeSpan time.Duration, data interface{}) *CacheItem {
+	// NewCacheItem 函数是cacheitem.go中定义的一个创建CacheItem类型实例的函数，返回值是*CacheItem类型
 	item := NewCacheItem(key, lifeSpan, data)
 
 	// Add item to cache.
 	table.Lock()
+	// 将NewCacheItem()函数返回的*CacheItem指针丢给addInternal方法
 	table.addInternal(item)
 
 	return item
@@ -306,14 +327,15 @@ func (table *CacheTable) Exists(key interface{}) bool {
 
 // NotFoundAdd checks whether an item is not yet cached. Unlike the Exists
 // method this also adds data if the key could not be found.
+// 该方法检查item是否已经被缓存。和Exists方法不同，即使数据并没有被找到，该方法也会添加该数据
 func (table *CacheTable) NotFoundAdd(key interface{}, lifeSpan time.Duration, data interface{}) bool {
 	table.Lock()
-
+	// 如果key已经被缓存，则返回false
 	if _, ok := table.items[key]; ok {
 		table.Unlock()
 		return false
 	}
-
+	// 当item不存在，则添加该数据
 	item := NewCacheItem(key, lifeSpan, data)
 	table.addInternal(item)
 
