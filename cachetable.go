@@ -274,7 +274,9 @@ func (table *CacheTable) Add(key interface{}, lifeSpan time.Duration, data inter
 	return item
 }
 
+// deleteInternal方法 先看上层调用者Delete方法
 func (table *CacheTable) deleteInternal(key interface{}) (*CacheItem, error) {
+	// 获取item的key，未获取到的话直接返回错误
 	r, ok := table.items[key]
 	if !ok {
 		return nil, ErrKeyNotFound
@@ -307,6 +309,7 @@ func (table *CacheTable) deleteInternal(key interface{}) (*CacheItem, error) {
 }
 
 // Delete an item from the cache.
+// 收到一个key，调用deleteInternal方法来完成删除操作
 func (table *CacheTable) Delete(key interface{}) (*CacheItem, error) {
 	table.Lock()
 	defer table.Unlock()
