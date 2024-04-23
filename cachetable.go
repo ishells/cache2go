@@ -276,17 +276,22 @@ func (table *CacheTable) Add(key interface{}, lifeSpan time.Duration, data inter
 
 // deleteInternal方法 先看上层调用者Delete方法
 func (table *CacheTable) deleteInternal(key interface{}) (*CacheItem, error) {
-	// 获取item的key，未获取到的话直接返回错误
+	// 获取item的key，未获取到的话直接返回错误，ErrkEeyNotFound是在error.go中定义的
 	r, ok := table.items[key]
 	if !ok {
 		return nil, ErrKeyNotFound
 	}
 
 	// Cache value so we don't keep blocking the mutex.
+	// 第一遍没看懂原作者的注释是是什么作用，先往下看
 	aboutToDeleteItem := table.aboutToDeleteItem
+	// 看了下面的循环语句之后意识到，要解除写锁的原因是要执行删除item前的回调函数，到这里暂时还是不知道前面的注释意思
 	table.Unlock()
 
 	// Trigger callbacks before deleting an item from cache.
+	// aboutToDeleteItem 是 CacheTable struct下面的一个属性， 保存的是 [ 删除一个item时触发的回调函数 ]
+	// 如果删除item时要触发的回调函数不为空，就循环执行这些回调函数
+	// 使用range作为循环条件的原因是 aboutToDeleteItem的类型是函数切片类型 [] func(item *CacheItem)
 	if aboutToDeleteItem != nil {
 		for _, callback := range aboutToDeleteItem {
 			callback(r)
@@ -295,12 +300,19 @@ func (table *CacheTable) deleteInternal(key interface{}) (*CacheItem, error) {
 
 	r.RLock()
 	defer r.RUnlock()
+	// aboutToExpire 是 CacheItem struct下面的一个属性， 保存的是 [ item被删除时触发的回调函数 ]
+	// aboutToExpire 属性变量类型和 aboutToDeleteItem 类型是一样的，所以可以循环执行这些回调函数
+	// 这里 r.RLock() 对要删除的item加上一个读锁，然后执行了aboutToExpire回调函数，这个函数需要在item刚好要删除前执行
 	if r.aboutToExpire != nil {
 		for _, callback := range r.aboutToExpire {
 			callback(key)
 		}
 	}
 
+	// 前面的两个for循环，分别先执行了 CacheTable 中 删除item时触发的回调函数，然后执行了 CacheItem 中 item被删除时触发的回调函数
+
+	// 这里对表加上写锁，前面已经对item加过读锁还没释放，然后这里执行delete函数
+	// delete函数的作用专门用来从map中删除特定key指定的元素的
 	table.Lock()
 	table.log("Deleting item with key", key, "created on", r.createdOn, "and hit", r.accessCount, "times from table", table.name)
 	delete(table.items, key)
