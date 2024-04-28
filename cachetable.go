@@ -332,9 +332,11 @@ func (table *CacheTable) Delete(key interface{}) (*CacheItem, error) {
 // Exists returns whether an item exists in the cache. Unlike the Value method
 // Exists neither tries to fetch data via the loadData callback nor does it
 // keep the item alive in the cache.
+// 该方法返回指定的key是否存在
 func (table *CacheTable) Exists(key interface{}) bool {
 	table.RLock()
 	defer table.RUnlock()
+	// 如果 key 存在，返回true，反之返回false
 	_, ok := table.items[key]
 
 	return ok
@@ -359,40 +361,52 @@ func (table *CacheTable) NotFoundAdd(key interface{}, lifeSpan time.Duration, da
 
 // Value returns an item from the cache and marks it to be kept alive. You can
 // pass additional arguments to your DataLoader callback function.
+// 这个方法的作用就是获取缓存中的item值，如果item不存在，则尝试通过loadData回调函数获取item
 func (table *CacheTable) Value(key interface{}, args ...interface{}) (*CacheItem, error) {
 	table.RLock()
 	r, ok := table.items[key]
+	// loadData [ 尝试加载一个不存在的key时触发的回调函数 ]
 	loadData := table.loadData
 	table.RUnlock()
-
+	// 如果该key存在，将该item的accessedOn设置为当前时间，将item的accessCount加1
 	if ok {
 		// Update access counter and timestamp.
 		r.KeepAlive()
 		return r, nil
 	}
 
+	//
 	// Item doesn't exist in cache. Try and fetch it with a data-loader.
 	if loadData != nil {
+		// 通过 loadData 回调函数来尝试获取不存在的item
+		// loadData 函数返回值是 *CacheItem类型
 		item := loadData(key, args...)
+		// 如果通过 loadData获取到了item，则调用 Add 方法将item添加到缓存中
 		if item != nil {
 			table.Add(key, item.lifeSpan, item.data)
 			return item, nil
 		}
-
+		// 如果通过 loadData 获取不到item，则返回 ErrKeyNotFoundOrLoadable 错误
 		return nil, ErrKeyNotFoundOrLoadable
 	}
-
+	// 如果回调函数 loadData 为空，则返回 ErrKeyNotFound 错误
 	return nil, ErrKeyNotFound
 }
 
 // Flush deletes all items from this cache table.
+// 该方法总体来说作用就是清空数据的作用
 func (table *CacheTable) Flush() {
 	table.Lock()
 	defer table.Unlock()
 
 	table.log("Flushing table", table.name)
-
+	// 创建一个新的map（map的key可以是任意类型，值类型为*CacheItem）
+	// 这里将一个空的map赋值给table.items，强行达到清空数据的目的
 	table.items = make(map[interface{}]*CacheItem)
+	// cleanupTimer [ 负责触发清除操作的计时器 ]
+	// cleanupInterval [ 触发清除操作的时间间隔 ]
+	// 将 cleanupInterval 设置为0，即间隔为0，表示不触发清除操作，因为缓存表此时是空的
+	// 从这里 cleanupInterval 的取值为0，也能反推出 addInternal 方法中最后判断触发expirationCheck方法中 expDur 变量（即cleanupInterval）取值为0的作用
 	table.cleanupInterval = 0
 	if table.cleanupTimer != nil {
 		table.cleanupTimer.Stop()
@@ -416,16 +430,23 @@ func (p CacheItemPairList) Len() int      { return len(p) }
 func (p CacheItemPairList) Less(i, j int) bool { return p[i].AccessCount > p[j].AccessCount }
 
 // MostAccessed returns the most accessed items in this cache table
+// 该方法返回访问最多的items，切片形式
 func (table *CacheTable) MostAccessed(count int64) []*CacheItem {
 	table.RLock()
 	defer table.RUnlock()
 
+	// CacheItemPairList 是 []CacheItemPair 类型，是类型不是实例
+	// p 是长度为 len(table.items) 的 CacheItemPairList 类型的切片实例
 	p := make(CacheItemPairList, len(table.items))
 	i := 0
+	// 遍历table.items，将table.items中的key和value分别赋值给p[i]的Key和AccessCount字段
+	//（即，将Key和AccessCount构造成CacheItemPair类型数据存入p切片）
 	for k, v := range table.items {
 		p[i] = CacheItemPair{k, v.accessCount}
 		i++
 	}
+	// 这里可以直接使用Sort方法来排序是因为CacheItemPairList实现了sort.Interface接口（也就是Swap、Len、Less三个方法）
+	// 但是需要注意的是，上面的Less方法在定义的时候把逻辑倒过来了，导致排序是从大到小的
 	sort.Sort(p)
 
 	var r []*CacheItem
@@ -437,6 +458,7 @@ func (table *CacheTable) MostAccessed(count int64) []*CacheItem {
 
 		item, ok := table.items[v.Key]
 		if ok {
+			// 因为数据是按照访问频率从高到低排序的，所以可以从第一条数据开始加
 			r = append(r, item)
 		}
 		c++
