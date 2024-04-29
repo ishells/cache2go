@@ -148,7 +148,7 @@ func (table *CacheTable) SetLogger(logger *log.Logger) {
 }
 
 // Expiration check loop, triggered by a self-adjusting timer.
-// 由计时器触发的到期检查
+// 由计时器触发的过期检查
 func (table *CacheTable) expirationCheck() {
 	table.Lock()
 	// 负责触发清除操作的计时器暂停
@@ -275,6 +275,7 @@ func (table *CacheTable) Add(key interface{}, lifeSpan time.Duration, data inter
 }
 
 // deleteInternal方法 先看上层调用者Delete方法
+// deleteInternal方法
 func (table *CacheTable) deleteInternal(key interface{}) (*CacheItem, error) {
 	// 获取item的key，未获取到的话直接返回错误，ErrkEeyNotFound是在error.go中定义的
 	r, ok := table.items[key]
@@ -284,8 +285,11 @@ func (table *CacheTable) deleteInternal(key interface{}) (*CacheItem, error) {
 
 	// Cache value so we don't keep blocking the mutex.
 	// 第一遍没看懂原作者的注释是是什么作用，先往下看
+	// -- 看了下面的循环语句之后意识到，要解除写锁的原因是要执行删除item前的回调函数，到这里暂时还是不知道前面的注释意思 --
 	aboutToDeleteItem := table.aboutToDeleteItem
-	// 看了下面的循环语句之后意识到，要解除写锁的原因是要执行删除item前的回调函数，到这里暂时还是不知道前面的注释意思
+	// 回过头来看代码逻辑，deleteInternal方法被Delete方法调用时，是带有写锁的
+	// gpt告诉我在循环调用回调函数之前，使用table.Unlock()解除写锁的目的是为了先释放表的写锁，让其它可能在等待该锁的goroutine有机会执行
+	// 避免因为删除操作导致锁的持有时间过长而阻塞其它操作
 	table.Unlock()
 
 	// Trigger callbacks before deleting an item from cache.
@@ -302,7 +306,7 @@ func (table *CacheTable) deleteInternal(key interface{}) (*CacheItem, error) {
 	defer r.RUnlock()
 	// aboutToExpire 是 CacheItem struct下面的一个属性， 保存的是 [ item被删除时触发的回调函数 ]
 	// aboutToExpire 属性变量类型和 aboutToDeleteItem 类型是一样的，所以可以循环执行这些回调函数
-	// 这里 r.RLock() 对要删除的item加上一个读锁，然后执行了aboutToExpire回调函数，这个函数需要在item刚好要删除前执行
+	// 这里 r.RLock() 将要删除的item加上一个读锁，然后执行了aboutToExpire回调函数，这个函数需要在item刚好要删除前执行
 	if r.aboutToExpire != nil {
 		for _, callback := range r.aboutToExpire {
 			callback(key)
@@ -323,9 +327,10 @@ func (table *CacheTable) deleteInternal(key interface{}) (*CacheItem, error) {
 // Delete an item from the cache.
 // 收到一个key，调用deleteInternal方法来完成删除操作
 func (table *CacheTable) Delete(key interface{}) (*CacheItem, error) {
+	// 加上写锁
 	table.Lock()
 	defer table.Unlock()
-
+	// 先调用deleteInternal方法，然后才是defer 解除写锁，也就是说调用deleteInternal方法时是带有写锁的
 	return table.deleteInternal(key)
 }
 

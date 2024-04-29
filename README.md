@@ -1,5 +1,6 @@
 # cache2go
-### cache2go [源码阅读参考文章](https://www.cnblogs.com/daniel-hutao/p/9197177.html)
+### cache2go [源码阅读参考文章1](https://www.cnblogs.com/daniel-hutao/p/9197177.html)
+### cache2go [源码阅读参考文章2](https://www.cnblogs.com/zhouweixin/p/16538769.html)
 
 [![Latest Release](https://img.shields.io/github/release/muesli/cache2go.svg)](https://github.com/muesli/cache2go/releases)
 [![Build Status](https://github.com/muesli/cache2go/workflows/build/badge.svg)](https://github.com/muesli/cache2go/actions)
